@@ -1,0 +1,21 @@
+{
+    "name": "lua_serial",
+    "version": "1.0.0",
+    "description": "Single-active hardware UART library for ESP32 with Lua support. A script selects one UART (port 1 or 2) with runtime pin assignment, gets Arduino-Serial-like binary-safe read/write, and the port + pins are released on deinit or script exit. Built for bridging ESP-NOW traffic to serial.",
+    "keywords": "lua, esp32, esp32s3, serial, uart, binary, bridge, espnow",
+    "autocomplete": "/serial.json",
+    "authors": [
+        {
+            "name": "Chahil Patel",
+            "email": "chahil@hyperlab.life",
+            "maintainer": true
+        }
+    ],
+    "export": {
+        "include": [
+            "src"
+        ]
+    },
+    "frameworks": ["arduino"],
+    "platforms": ["espressif32"]
+}

@@ -1,0 +1,89 @@
+{
+  "serial": [
+    {
+      "name": "serial.init",
+      "snippet": "serial.init(${1:port}, ${2:baud}, ${3:rx}, ${4:tx})",
+      "description": "serial.init(port, baud, rx, tx, opts?) -> bool\nOpen ONE hardware UART; becomes the active port for all other calls.\nOpening again (any port) closes the previous one and releases its pins.\n- port: 1 or 2 (UART0 is the console)\n- baud: e.g. 115200, 921600\n- rx, tx: GPIO numbers (-1 = unused direction)\n- opts: table {config=\"8N1\", rxbuf=2048, txbuf=0, invert=false}"
+    },
+    {
+      "name": "serial.deinit",
+      "snippet": "serial.deinit()",
+      "description": "serial.deinit() -> bool\nFlush TX, close the active UART and reset both pins to hi-Z GPIO.\nAlso runs automatically from C when the script exits."
+    },
+    {
+      "name": "serial.is_initialized",
+      "snippet": "serial.is_initialized()",
+      "description": "serial.is_initialized() -> bool\nTrue if a UART is currently open."
+    },
+    {
+      "name": "serial.get_port",
+      "snippet": "serial.get_port()",
+      "description": "serial.get_port() -> 1|2|nil\nWhich UART is active (nil = none)."
+    },
+    {
+      "name": "serial.set_pins",
+      "snippet": "serial.set_pins(${1:rx}, ${2:tx})",
+      "description": "serial.set_pins(rx, tx) -> bool\nMove the active UART to new pins on the fly (TX drained first).\nThe vacated pins are reset to hi-Z GPIO."
+    },
+    {
+      "name": "serial.set_baud",
+      "snippet": "serial.set_baud(${1:baud})",
+      "description": "serial.set_baud(baud) -> bool\nChange baud rate live, without closing/reopening the port."
+    },
+    {
+      "name": "serial.get_config",
+      "snippet": "serial.get_config()",
+      "description": "serial.get_config() -> table|nil\nActive port info: {port=1, baud=115200, rx=18, tx=17, config=\"8N1\"}."
+    },
+    {
+      "name": "serial.write",
+      "snippet": "serial.write(${1:data})",
+      "description": "serial.write(data) -> bytes_written\nBinary-safe write (Lua strings may contain NULs). Pass ESP-NOW payloads straight through:\nespnow.on_receive(function(mac, data) serial.write(data) end)"
+    },
+    {
+      "name": "serial.print",
+      "snippet": "serial.print(${1:value})",
+      "description": "serial.print(value) -> bytes_written\nWrite value coerced to text (numbers/booleans ok), no newline."
+    },
+    {
+      "name": "serial.println",
+      "snippet": "serial.println(${1:value})",
+      "description": "serial.println(value?) -> bytes_written\nLike serial.print plus \"\\r\\n\" (Arduino-style). No arg = just the newline."
+    },
+    {
+      "name": "serial.flush",
+      "snippet": "serial.flush()",
+      "description": "serial.flush()\nBlock until all queued TX bytes are on the wire."
+    },
+    {
+      "name": "serial.available_for_write",
+      "snippet": "serial.available_for_write()",
+      "description": "serial.available_for_write() -> int\nBytes that can be written right now without blocking (TX backpressure check)."
+    },
+    {
+      "name": "serial.available",
+      "snippet": "serial.available()",
+      "description": "serial.available() -> int\nBytes waiting in the RX buffer."
+    },
+    {
+      "name": "serial.read",
+      "snippet": "serial.read()",
+      "description": "serial.read(n?) -> string\nNon-blocking: return up to n buffered bytes (default: all) as a binary string; \"\" if none."
+    },
+    {
+      "name": "serial.read_until",
+      "snippet": "serial.read_until(\"${1:\\n}\")",
+      "description": "serial.read_until(delim, max?) -> string|nil\nNon-blocking framing: returns a complete chunk (delim stripped) once the 1-byte delimiter arrives, else nil while bytes accumulate internally. Accumulator capped at max (default 512) - overflow returns the blob as-is."
+    },
+    {
+      "name": "serial.peek",
+      "snippet": "serial.peek()",
+      "description": "serial.peek() -> int\nNext buffered byte without consuming it, or -1 if the buffer is empty."
+    },
+    {
+      "name": "serial.clear",
+      "snippet": "serial.clear()",
+      "description": "serial.clear()\nDiscard everything in the RX buffer (and the read_until accumulator)."
+    }
+  ]
+}
