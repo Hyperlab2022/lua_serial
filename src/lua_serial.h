@@ -10,10 +10,13 @@ struct lua_State;
 // lua_serial — single-active-UART Lua module
 //
 // Unlike most modules, serial is NEVER initialized from C at boot. A Lua
-// script selects and opens ONE hardware UART (port 1 or 2; UART0 is the
-// console) with pins chosen at runtime:
+// script selects and opens ONE port with pins chosen at runtime:
+//
+//     port 1, 2  hardware UART1 / UART2 (UART0 is the console)
+//     port 3     RMT "software" UART (rmt_serial.h) on any free GPIOs
 //
 //     serial.init(1, 115200, rx, tx, {config="8N1", rxbuf=2048})
+//     serial.init(3, 115200, rx, tx)          -- same API, RMT-timed
 //
 // All other calls are id-free and act on that active port. serial.deinit()
 // (or serial_cleanup_c() from the host's script-exit hook) closes the UART
@@ -21,14 +24,17 @@ struct lua_State;
 // ============================================================================
 
 // Exposed ports: 1..LUA_SERIAL_MAX_PORT (UART0 is the log console — never
-// exposed to Lua)
-#define LUA_SERIAL_MAX_PORT 2
+// exposed to Lua). Port LUA_SERIAL_SOFT_PORT is the RMT software UART.
+#define LUA_SERIAL_MAX_PORT  3
+#define LUA_SERIAL_SOFT_PORT 3
 
 // Default driver ring-buffer sizes (bytes). RX is generous so a burst of
 // ESP-NOW packets bridged to a slower UART doesn't drop bytes; both are
 // overridable per-open via the Lua opts table.
 #define LUA_SERIAL_DEFAULT_RX_BUF 2048
 #define LUA_SERIAL_DEFAULT_TX_BUF 0
+// The soft port always queues TX; txbuf <= 0 selects this default.
+#define LUA_SERIAL_SOFT_DEFAULT_TX_BUF 256
 
 // Cap for the read_until() line accumulator when no delimiter shows up
 // (overridable per call). Prevents unbounded growth on binary streams.
@@ -63,6 +69,11 @@ int    serial_available_for_write_c(void);
 int    serial_peek_c(void);                          // -1 if empty
 void   serial_flush_c(void);                         // block until TX drained
 void   serial_clear_c(void);                         // discard buffered RX
+
+// Soft-port receive error counters since init. Returns false (outputs
+// untouched) when the active port is not the soft port.
+bool   serial_get_stats_c(uint32_t *rx_overflows, uint32_t *rx_frame_errors,
+                          uint32_t *rx_parity_errors);
 
 // ============================================================================
 // C API — Host integration

@@ -1,4 +1,5 @@
 #include "lua_serial.h"
+#include "rmt_serial.h"
 
 #include <HardwareSerial.h>
 #include <driver/gpio.h>
@@ -16,9 +17,14 @@ extern "C" {
 #define LUA_OPT_INT32(L, n, d)  ((int32_t)luaL_optnumber(L, n, d))
 
 // ============================================================================
-// Internal state — exactly one active UART at a time
+// Internal state — exactly one active port at a time
 // ============================================================================
+// s_io is the active port as a Stream (all I/O goes through it). s_uart
+// (ports 1-2) or s_soft_active (port 3) says which backend owns it.
+static Stream         *s_io = nullptr;
 static HardwareSerial *s_uart = nullptr;   // &Serial1 or &Serial2
+static RmtSerial       s_soft;             // port 3; idle until begin()
+static bool     s_soft_active = false;
 static int      s_port = 0;                // 0 = none
 static int      s_rx_pin = -1;
 static int      s_tx_pin = -1;
@@ -97,44 +103,71 @@ bool serial_init_c(int port, uint32_t baud, int rx_pin, int tx_pin,
 
     // Single-active rule: opening a port (same or different) closes the
     // previous one first, releasing its pins.
-    if (s_uart != nullptr) serial_deinit_c();
+    if (s_io != nullptr) serial_deinit_c();
 
-    HardwareSerial *uart = port_object(port);
-    if (uart == nullptr) return false;
+    if (port == LUA_SERIAL_SOFT_PORT) {
+        // The RMT channels configure the GPIOs themselves; start from a
+        // clean hi-Z state (pull-up keeps the TX line idle-high meanwhile).
+        release_pin(rx_pin);
+        release_pin(tx_pin);
+        size_t rxb = rx_buf > 0 ? (size_t)rx_buf : (size_t)LUA_SERIAL_DEFAULT_RX_BUF;
+        size_t txb = tx_buf > 0 ? (size_t)tx_buf : (size_t)LUA_SERIAL_SOFT_DEFAULT_TX_BUF;
+        if (!s_soft.begin(baud, config, rx_pin, tx_pin, invert, rxb, txb)) {
+            Serial.printf("[SERIAL] init: soft port begin failed (rx=%d tx=%d)\n", rx_pin, tx_pin);
+            release_pin(rx_pin);
+            release_pin(tx_pin);
+            return false;
+        }
+        s_io = &s_soft;
+        s_uart = nullptr;
+        s_soft_active = true;
+    } else {
+        HardwareSerial *uart = port_object(port);
+        if (uart == nullptr) return false;
 
-    if (rx_buf > 0) uart->setRxBufferSize(rx_buf);
-    uart->setTxBufferSize(tx_buf > 0 ? tx_buf : 0);
-    uart->begin(baud, config, rx_pin, tx_pin, invert);
-    if (!(*uart)) {
-        Serial.printf("[SERIAL] init: UART%d begin failed\n", port);
-        uart->end();
-        return false;
+        if (rx_buf > 0) uart->setRxBufferSize(rx_buf);
+        uart->setTxBufferSize(tx_buf > 0 ? tx_buf : 0);
+        uart->begin(baud, config, rx_pin, tx_pin, invert);
+        if (!(*uart)) {
+            Serial.printf("[SERIAL] init: UART%d begin failed\n", port);
+            uart->end();
+            return false;
+        }
+        s_io = uart;
+        s_uart = uart;
+        s_soft_active = false;
     }
 
-    s_uart = uart;
     s_port = port;
     s_rx_pin = rx_pin;
     s_tx_pin = tx_pin;
     s_baud = baud;
     s_acc = "";
 
-    Serial.printf("[SERIAL] UART%d open: %lu baud, rx=%d tx=%d\n",
-                  port, (unsigned long)baud, rx_pin, tx_pin);
+    Serial.printf("[SERIAL] %s%d open: %lu baud, rx=%d tx=%d\n",
+                  s_soft_active ? "soft port " : "UART", port,
+                  (unsigned long)baud, rx_pin, tx_pin);
     return true;
 }
 
 bool serial_deinit_c(void) {
-    if (s_uart == nullptr) return false;
+    if (s_io == nullptr) return false;
 
-    s_uart->flush();   // don't cut off in-flight TX
-    s_uart->end();
+    if (s_soft_active) {
+        s_soft.end();      // drains queued TX first
+    } else {
+        s_uart->flush();   // don't cut off in-flight TX
+        s_uart->end();
+    }
     release_pin(s_rx_pin);
     release_pin(s_tx_pin);
 
-    Serial.printf("[SERIAL] UART%d closed, pins %d/%d released\n",
+    Serial.printf("[SERIAL] port %d closed, pins %d/%d released\n",
                   s_port, s_rx_pin, s_tx_pin);
 
+    s_io = nullptr;
     s_uart = nullptr;
+    s_soft_active = false;
     s_port = 0;
     s_rx_pin = -1;
     s_tx_pin = -1;
@@ -143,20 +176,26 @@ bool serial_deinit_c(void) {
     return true;
 }
 
-bool serial_is_initialized_c(void) { return s_uart != nullptr; }
+bool serial_is_initialized_c(void) { return s_io != nullptr; }
 int  serial_get_port_c(void)       { return s_port; }
 
 bool serial_set_pins_c(int rx_pin, int tx_pin) {
-    if (s_uart == nullptr) return false;
+    if (s_io == nullptr) return false;
     if (rx_pin < 0 && tx_pin < 0) return false;
 
-    s_uart->flush();
     int old_rx = s_rx_pin, old_tx = s_tx_pin;
-    if (!s_uart->setPins(rx_pin, tx_pin)) {
+    bool ok;
+    if (s_soft_active) {
+        ok = s_soft.setPins(rx_pin, tx_pin);   // drains TX, rebuilds channels
+    } else {
+        s_uart->flush();
+        ok = s_uart->setPins(rx_pin, tx_pin);
+    }
+    if (!ok) {
         Serial.printf("[SERIAL] set_pins(%d, %d) failed\n", rx_pin, tx_pin);
         return false;
     }
-    // The core re-attaches the UART signals; put the vacated pins back to hi-Z.
+    // The signals moved to the new pins; put the vacated pins back to hi-Z.
     if (old_rx >= 0 && old_rx != rx_pin && old_rx != tx_pin) release_pin(old_rx);
     if (old_tx >= 0 && old_tx != rx_pin && old_tx != tx_pin) release_pin(old_tx);
     s_rx_pin = rx_pin;
@@ -165,8 +204,12 @@ bool serial_set_pins_c(int rx_pin, int tx_pin) {
 }
 
 bool serial_set_baud_c(uint32_t baud) {
-    if (s_uart == nullptr || baud == 0) return false;
-    s_uart->updateBaudRate(baud);
+    if (s_io == nullptr || baud == 0) return false;
+    if (s_soft_active) {
+        if (!s_soft.updateBaudRate(baud)) return false;
+    } else {
+        s_uart->updateBaudRate(baud);
+    }
     s_baud = baud;
     return true;
 }
@@ -176,12 +219,12 @@ bool serial_set_baud_c(uint32_t baud) {
 // ============================================================================
 
 size_t serial_write_c(const uint8_t *data, size_t len) {
-    if (s_uart == nullptr || data == nullptr || len == 0) return 0;
-    return s_uart->write(data, len);
+    if (s_io == nullptr || data == nullptr || len == 0) return 0;
+    return s_io->write(data, len);
 }
 
 size_t serial_read_c(uint8_t *buf, size_t max_len) {
-    if (s_uart == nullptr || buf == nullptr || max_len == 0) return 0;
+    if (s_io == nullptr || buf == nullptr || max_len == 0) return 0;
     size_t n = 0;
 
     // Serve the read_until accumulator first (it's the oldest data).
@@ -192,38 +235,51 @@ size_t serial_read_c(uint8_t *buf, size_t max_len) {
         if (n == max_len) return n;
     }
 
-    int avail = s_uart->available();
+    int avail = s_io->available();
     if (avail > 0) {
         size_t want = min((size_t)avail, max_len - n);
-        n += s_uart->readBytes(buf + n, want);
+        n += s_io->readBytes(buf + n, want);
     }
     return n;
 }
 
 int serial_available_c(void) {
-    if (s_uart == nullptr) return 0;
-    return (int)s_acc.length() + s_uart->available();
+    if (s_io == nullptr) return 0;
+    return (int)s_acc.length() + s_io->available();
 }
 
 int serial_available_for_write_c(void) {
-    if (s_uart == nullptr) return 0;
-    return s_uart->availableForWrite();
+    if (s_io == nullptr) return 0;
+    return s_io->availableForWrite();
 }
 
 int serial_peek_c(void) {
-    if (s_uart == nullptr) return -1;
+    if (s_io == nullptr) return -1;
     if (s_acc.length() > 0) return (uint8_t)s_acc[0];
-    return s_uart->peek();
+    return s_io->peek();
 }
 
 void serial_flush_c(void) {
-    if (s_uart != nullptr) s_uart->flush();
+    if (s_io != nullptr) s_io->flush();
 }
 
 void serial_clear_c(void) {
-    if (s_uart == nullptr) return;
+    if (s_io == nullptr) return;
     s_acc = "";
-    while (s_uart->available() > 0) s_uart->read();
+    if (s_soft_active) {
+        s_soft.clearRx();
+        return;
+    }
+    while (s_io->available() > 0) s_io->read();
+}
+
+bool serial_get_stats_c(uint32_t *rx_overflows, uint32_t *rx_frame_errors,
+                        uint32_t *rx_parity_errors) {
+    if (!s_soft_active) return false;
+    if (rx_overflows) *rx_overflows = s_soft.rxOverflows();
+    if (rx_frame_errors) *rx_frame_errors = s_soft.rxFrameErrors();
+    if (rx_parity_errors) *rx_parity_errors = s_soft.rxParityErrors();
+    return true;
 }
 
 // ============================================================================
@@ -231,8 +287,8 @@ void serial_clear_c(void) {
 // ============================================================================
 
 void serial_cleanup_c(void) {
-    if (s_uart != nullptr) {
-        Serial.printf("[SERIAL] cleanup: closing UART%d left open by script\n", s_port);
+    if (s_io != nullptr) {
+        Serial.printf("[SERIAL] cleanup: closing port %d left open by script\n", s_port);
         serial_deinit_c();
     }
 }
@@ -242,6 +298,7 @@ void serial_cleanup_c(void) {
 // ============================================================================
 
 // serial.init(port, baud, rx, tx, [opts]) -> bool
+// port 1-2 = hardware UART, 3 = RMT soft UART
 // opts: {config="8N1", rxbuf=2048, txbuf=0, invert=false}
 static int l_init(lua_State *L) {
     int port      = LUA_CHECK_INT32(L, 1);
@@ -327,16 +384,32 @@ static int l_set_baud(lua_State *L) {
 }
 
 static int l_get_config(lua_State *L) {
-    if (s_uart == nullptr) {
+    if (s_io == nullptr) {
         lua_pushnil(L);
         return 1;
     }
-    lua_createtable(L, 0, 5);
+    lua_createtable(L, 0, 6);
     lua_pushinteger(L, s_port);      lua_setfield(L, -2, "port");
     lua_pushinteger(L, s_baud);      lua_setfield(L, -2, "baud");
     lua_pushinteger(L, s_rx_pin);    lua_setfield(L, -2, "rx");
     lua_pushinteger(L, s_tx_pin);    lua_setfield(L, -2, "tx");
     lua_pushstring(L, s_config_str); lua_setfield(L, -2, "config");
+    lua_pushboolean(L, s_soft_active); lua_setfield(L, -2, "soft");
+    return 1;
+}
+
+// serial.get_stats() -> {rx_overflows, rx_frame_errors, rx_parity_errors} | nil
+// Soft port only: receive error counters since init.
+static int l_get_stats(lua_State *L) {
+    uint32_t ovf = 0, fe = 0, pe = 0;
+    if (!serial_get_stats_c(&ovf, &fe, &pe)) {
+        lua_pushnil(L);
+        return 1;
+    }
+    lua_createtable(L, 0, 3);
+    lua_pushinteger(L, ovf); lua_setfield(L, -2, "rx_overflows");
+    lua_pushinteger(L, fe);  lua_setfield(L, -2, "rx_frame_errors");
+    lua_pushinteger(L, pe);  lua_setfield(L, -2, "rx_parity_errors");
     return 1;
 }
 
@@ -406,14 +479,14 @@ static int l_read_until(lua_State *L) {
     int max = LUA_OPT_INT32(L, 2, LUA_SERIAL_DEFAULT_LINE_MAX);
     if (max < 1) max = 1;
 
-    if (s_uart == nullptr) {
+    if (s_io == nullptr) {
         lua_pushnil(L);
         return 1;
     }
 
     // Drain what's available into the accumulator, watching for the delimiter.
-    while (s_uart->available() > 0) {
-        int c = s_uart->read();
+    while (s_io->available() > 0) {
+        int c = s_io->read();
         if (c < 0) break;
         if ((char)c == delim) {
             lua_pushlstring(L, s_acc.c_str(), s_acc.length());
@@ -469,6 +542,7 @@ static const luaL_Reg serial_functions[] = {
     {"set_pins",            l_set_pins},
     {"set_baud",            l_set_baud},
     {"get_config",          l_get_config},
+    {"get_stats",           l_get_stats},
 
     // Write
     {"write",               l_write},
@@ -492,6 +566,8 @@ int luaopen_serial(lua_State *L, const char *module_name) {
 
     lua_pushinteger(L, LUA_SERIAL_MAX_PORT);
     lua_setfield(L, -2, "MAX_PORTS");
+    lua_pushinteger(L, LUA_SERIAL_SOFT_PORT);
+    lua_setfield(L, -2, "SOFT_PORT");
 
     lua_setglobal(L, module_name);
     return 0;

@@ -3,7 +3,7 @@
     {
       "name": "serial.init",
       "snippet": "serial.init(${1:port}, ${2:baud}, ${3:rx}, ${4:tx})",
-      "description": "serial.init(port, baud, rx, tx, opts?) -> bool\nOpen ONE hardware UART; becomes the active port for all other calls.\nOpening again (any port) closes the previous one and releases its pins.\n- port: 1 or 2 (UART0 is the console)\n- baud: e.g. 115200, 921600\n- rx, tx: GPIO numbers (-1 = unused direction)\n- opts: table {config=\"8N1\", rxbuf=2048, txbuf=0, invert=false}"
+      "description": "serial.init(port, baud, rx, tx, opts?) -> bool\nOpen ONE port; becomes the active port for all other calls.\nOpening again (any port) closes the previous one and releases its pins.\n- port: 1 or 2 = hardware UART (UART0 is the console), 3 = RMT software UART\n- baud: e.g. 115200, 921600 (port 3: 300-2000000)\n- rx, tx: GPIO numbers (-1 = unused direction)\n- opts: table {config=\"8N1\", rxbuf=2048, txbuf=0, invert=false}"
     },
     {
       "name": "serial.deinit",
@@ -18,7 +18,7 @@
     {
       "name": "serial.get_port",
       "snippet": "serial.get_port()",
-      "description": "serial.get_port() -> 1|2|nil\nWhich UART is active (nil = none)."
+      "description": "serial.get_port() -> 1|2|3|nil\nWhich port is active (nil = none)."
     },
     {
       "name": "serial.set_pins",
@@ -33,7 +33,12 @@
     {
       "name": "serial.get_config",
       "snippet": "serial.get_config()",
-      "description": "serial.get_config() -> table|nil\nActive port info: {port=1, baud=115200, rx=18, tx=17, config=\"8N1\"}."
+      "description": "serial.get_config() -> table|nil\nActive port info: {port=1, baud=115200, rx=18, tx=17, config=\"8N1\", soft=false}."
+    },
+    {
+      "name": "serial.get_stats",
+      "snippet": "serial.get_stats()",
+      "description": "serial.get_stats() -> table|nil\nSoft port (3) receive error counters since init: {rx_overflows, rx_frame_errors, rx_parity_errors}. nil for hardware ports."
     },
     {
       "name": "serial.write",
@@ -84,6 +89,16 @@
       "name": "serial.clear",
       "snippet": "serial.clear()",
       "description": "serial.clear()\nDiscard everything in the RX buffer (and the read_until accumulator)."
+    },
+    {
+      "name": "serial.SOFT_PORT",
+      "snippet": "serial.SOFT_PORT",
+      "description": "serial.SOFT_PORT -> 3\nPort number of the RMT software UART."
+    },
+    {
+      "name": "serial.MAX_PORTS",
+      "snippet": "serial.MAX_PORTS",
+      "description": "serial.MAX_PORTS -> 3\nHighest selectable port number."
     }
   ]
 }
